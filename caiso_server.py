@@ -1,8 +1,8 @@
 """
-CAISO LMP Server + Dashboard
-=============================
-Serves both the dashboard HTML and the CAISO data API.
-Deploy to Render.com - no local files needed.
+CAISO LMP Server + Dashboard (RTM + HASP)
+==========================================
+Serves both RTM 5-min and HASP 15-min dashboards on one page.
+Deploy to Render.com.
 
 Requirements: requests, flask, gunicorn
 """
@@ -19,8 +19,6 @@ from flask import Flask, jsonify
 
 OASIS_URL = "https://oasis.caiso.com/oasisapi/SingleZip"
 NODE      = "ELAP_PACE-APND"
-MARKET    = "RTM"
-QUERY     = "PRC_INTVL_LMP"
 VERSION   = "1"
 TZ_PT     = ZoneInfo("America/Los_Angeles")
 TZ_UTC    = ZoneInfo("UTC")
@@ -33,7 +31,7 @@ def add_cors(response):
     return response
 
 
-def fetch_hour(hr: int) -> list:
+def fetch_hour(hr: int, market: str, query: str) -> list:
     now_pt    = datetime.now(tz=TZ_PT)
     today_pt  = now_pt.replace(hour=0, minute=0, second=0, microsecond=0)
     start_pt  = today_pt + timedelta(hours=hr)
@@ -42,8 +40,8 @@ def fetch_hour(hr: int) -> list:
     end_utc   = end_pt.astimezone(TZ_UTC)
 
     params = {
-        "queryname":     QUERY,
-        "market_run_id": MARKET,
+        "queryname":     query,
+        "market_run_id": market,
         "grp_type":      "ALL_APNODES",
         "node":          NODE,
         "startdatetime": start_utc.strftime("%Y%m%dT%H:%M-0000"),
@@ -77,21 +75,28 @@ def fetch_hour(hr: int) -> list:
     return []
 
 
-@app.route("/today")
-def today():
+def fetch_all(market: str, query: str) -> list:
     current_hr = datetime.now(tz=TZ_PT).hour
     all_rows   = []
-
     for hr in range(current_hr):
         try:
-            rows = fetch_hour(hr)
+            rows = fetch_hour(hr, market, query)
             all_rows.extend(rows)
-            print(f"  Hour {hr:02d}: {len(rows)} rows")
+            print(f"  [{market}] Hour {hr:02d}: {len(rows)} rows")
         except Exception as e:
-            print(f"  Hour {hr:02d}: SKIPPED ({e})")
+            print(f"  [{market}] Hour {hr:02d}: SKIPPED ({e})")
         time.sleep(10)
+    return all_rows
 
-    return jsonify(all_rows)
+
+@app.route("/today/rtm")
+def today_rtm():
+    return jsonify(fetch_all("RTM", "PRC_INTVL_LMP"))
+
+
+@app.route("/today/hasp")
+def today_hasp():
+    return jsonify(fetch_all("HASP", "PRC_INTVL_LMP"))
 
 
 @app.route("/")
@@ -105,12 +110,14 @@ def dashboard():
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: Arial, sans-serif; background: #f0f4f8; color: #222; }
-  header {
+  .section-header {
     background: #1F4E79; color: #fff; padding: 16px 24px;
     display: flex; align-items: center; justify-content: space-between;
+    margin-top: 24px;
   }
-  header h1 { font-size: 18px; }
-  header .meta { font-size: 12px; opacity: .75; text-align: right; }
+  .section-header:first-of-type { margin-top: 0; }
+  .section-header h1 { font-size: 18px; }
+  .section-header .meta { font-size: 12px; opacity: .75; text-align: right; }
   .cards { display: flex; gap: 16px; padding: 20px 24px 0; flex-wrap: wrap; }
   .card { background: #fff; border-radius: 8px; padding: 16px 20px; flex: 1; min-width: 140px; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
   .card .label { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: .5px; }
@@ -132,62 +139,91 @@ def dashboard():
   .status { text-align: center; padding: 40px; color: #666; font-size: 14px; }
   .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid #ccc; border-top-color: #1F4E79; border-radius: 50%; animation: spin .8s linear infinite; margin-right: 8px; vertical-align: middle; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  #countdown { font-size: 12px; opacity: .75; }
+  .divider { height: 4px; background: #1F4E79; opacity: 0.2; }
 </style>
 </head>
 <body>
-<header>
+
+<!-- RTM Section -->
+<div class="section-header">
   <div>
-    <h1>CAISO Real-Time LMP &nbsp;|&nbsp; ELAP_PACE-APND</h1>
-    <div class="meta" id="lastRefreshed">Loading…</div>
+    <h1>CAISO Real-Time Market (RTM) 5-Min LMP &nbsp;|&nbsp; ELAP_PACE-APND</h1>
+    <div class="meta" id="rtmRefreshed">Loading…</div>
   </div>
   <div style="text-align:right">
-    <button onclick="refresh()" style="background:#fff;color:#1F4E79;border:none;padding:7px 14px;border-radius:6px;cursor:pointer;font-weight:bold;font-size:13px;">⟳ Refresh Now</button>
-    <div id="countdown" style="margin-top:4px;"></div>
+    <button onclick="loadMarket('rtm')" style="background:#fff;color:#1F4E79;border:none;padding:7px 14px;border-radius:6px;cursor:pointer;font-weight:bold;font-size:13px;">⟳ Refresh</button>
   </div>
-</header>
+</div>
 <div class="cards">
-  <div class="card"><div class="label">Latest LMP</div><div class="value" id="cLatest">—</div></div>
-  <div class="card"><div class="label">Today's High</div><div class="value pos" id="cHigh">—</div></div>
-  <div class="card"><div class="label">Today's Low</div><div class="value neg" id="cLow">—</div></div>
-  <div class="card"><div class="label">Today's Avg</div><div class="value" id="cAvg">—</div></div>
-  <div class="card"><div class="label">Hours Fetched</div><div class="value" id="cHours">—</div></div>
+  <div class="card"><div class="label">Latest LMP</div><div class="value" id="rtm-cLatest">—</div></div>
+  <div class="card"><div class="label">Today's High</div><div class="value pos" id="rtm-cHigh">—</div></div>
+  <div class="card"><div class="label">Today's Low</div><div class="value neg" id="rtm-cLow">—</div></div>
+  <div class="card"><div class="label">Today's Avg</div><div class="value" id="rtm-cAvg">—</div></div>
+  <div class="card"><div class="label">Hours Fetched</div><div class="value" id="rtm-cHours">—</div></div>
 </div>
 <div class="chart-wrap">
   <h2>5-Minute LMP ($/MWh) — Today So Far</h2>
-  <canvas id="chart" height="220"></canvas>
+  <canvas id="rtm-chart" height="220"></canvas>
 </div>
 <div class="table-wrap">
   <h2>Hourly Average LMP ($/MWh)</h2>
-  <div id="tableContainer"><div class="status"><span class="spinner"></span> Fetching data…</div></div>
+  <div id="rtm-table"><div class="status"><span class="spinner"></span> Fetching data…</div></div>
 </div>
+
+<div class="divider"></div>
+
+<!-- HASP Section -->
+<div class="section-header">
+  <div>
+    <h1>Hour-Ahead Scheduling Process (HASP) 15-Min LMP &nbsp;|&nbsp; ELAP_PACE-APND</h1>
+    <div class="meta" id="haspRefreshed">Loading…</div>
+  </div>
+  <div style="text-align:right">
+    <button onclick="loadMarket('hasp')" style="background:#fff;color:#1F4E79;border:none;padding:7px 14px;border-radius:6px;cursor:pointer;font-weight:bold;font-size:13px;">⟳ Refresh</button>
+  </div>
+</div>
+<div class="cards">
+  <div class="card"><div class="label">Latest LMP</div><div class="value" id="hasp-cLatest">—</div></div>
+  <div class="card"><div class="label">Today's High</div><div class="value pos" id="hasp-cHigh">—</div></div>
+  <div class="card"><div class="label">Today's Low</div><div class="value neg" id="hasp-cLow">—</div></div>
+  <div class="card"><div class="label">Today's Avg</div><div class="value" id="hasp-cAvg">—</div></div>
+  <div class="card"><div class="label">Hours Fetched</div><div class="value" id="hasp-cHours">—</div></div>
+</div>
+<div class="chart-wrap">
+  <h2>15-Minute LMP ($/MWh) — Today So Far</h2>
+  <canvas id="hasp-chart" height="220"></canvas>
+</div>
+<div class="table-wrap">
+  <h2>Hourly Average LMP ($/MWh)</h2>
+  <div id="hasp-table"><div class="status"><span class="spinner"></span> Fetching data…</div></div>
+</div>
+
 <script>
-let chartInst = null;
-let countdownTimer = null;
-let nextRefreshAt = null;
+let charts = {};
 
 function nowPT() {
   return new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
 }
 
-async function refresh() {
-  document.getElementById("tableContainer").innerHTML =
+async function loadMarket(market) {
+  const prefix = market;
+  document.getElementById(prefix + "-table").innerHTML =
     '<div class="status"><span class="spinner"></span> Fetching data…</div>';
-  document.getElementById("lastRefreshed").textContent = "Refreshing…";
+  document.getElementById(prefix + "Refreshed").textContent = "Refreshing…";
 
   let allRows = [];
   try {
-    const resp = await fetch("/today");
+    const resp = await fetch("/today/" + market);
     if (!resp.ok) throw new Error("Server error: " + resp.status);
     allRows = await resp.json();
   } catch(e) {
-    document.getElementById("tableContainer").innerHTML =
+    document.getElementById(prefix + "-table").innerHTML =
       '<div class="status">⚠️ Could not load data: ' + e.message + '</div>';
     return;
   }
 
   if (!allRows.length) {
-    document.getElementById("tableContainer").innerHTML =
+    document.getElementById(prefix + "-table").innerHTML =
       '<div class="status">No data available yet for today.</div>';
     return;
   }
@@ -213,15 +249,11 @@ async function refresh() {
     el.textContent = "$" + v.toFixed(2);
     el.className = "value " + (v >= 0 ? "pos" : "neg");
   };
-  colorVal("cLatest", latest);
-  colorVal("cHigh",   high);
-  colorVal("cLow",    low);
-  document.getElementById("cAvg").textContent   = "$" + avg.toFixed(2);
-  document.getElementById("cHours").textContent = new Set(rows.map(r => r.hr)).size;
-
-  if (chartInst) chartInst.destroy();
-  const ctx    = document.getElementById("chart").getContext("2d");
-  const colors = lmps.map(v => v >= 0 ? "rgba(26,107,47,0.8)" : "rgba(185,28,28,0.8)");
+  colorVal(prefix + "-cLatest", latest);
+  colorVal(prefix + "-cHigh",   high);
+  colorVal(prefix + "-cLow",    low);
+  document.getElementById(prefix + "-cAvg").textContent   = "$" + avg.toFixed(2);
+  document.getElementById(prefix + "-cHours").textContent = new Set(rows.map(r => r.hr)).size;
 
   if (!window.Chart) {
     await new Promise((res, rej) => {
@@ -232,7 +264,10 @@ async function refresh() {
     });
   }
 
-  chartInst = new Chart(ctx, {
+  if (charts[prefix]) charts[prefix].destroy();
+  const ctx    = document.getElementById(prefix + "-chart").getContext("2d");
+  const colors = lmps.map(v => v >= 0 ? "rgba(26,107,47,0.8)" : "rgba(185,28,28,0.8)");
+  charts[prefix] = new Chart(ctx, {
     type: "bar",
     data: {
       labels: rows.map(r => r.timePT),
@@ -268,32 +303,28 @@ async function refresh() {
            '</td><td class="' + (r.max < 0 ? "neg" : "pos") + '">' + r.max.toFixed(4) + '</td></tr>';
   });
   tbl += '</tbody></table>';
-  document.getElementById("tableContainer").innerHTML = tbl;
+  document.getElementById(prefix + "-table").innerHTML = tbl;
 
   const now = nowPT();
-  document.getElementById("lastRefreshed").textContent =
+  document.getElementById(prefix + "Refreshed").textContent =
     "Last refreshed: " + now.toLocaleTimeString("en-US", {timeZone:"America/Los_Angeles"}) + " PT";
-
-  scheduleNext();
 }
 
+// Schedule auto-refresh at top of next hour
 function scheduleNext() {
-  if (countdownTimer) clearInterval(countdownTimer);
   const now  = nowPT();
   const next = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours()+1, 0, 0);
-  nextRefreshAt = next;
-  setTimeout(refresh, next - now);
-
-  countdownTimer = setInterval(() => {
-    const diff = Math.max(0, nextRefreshAt - nowPT());
-    const m = Math.floor(diff / 60000);
-    const s = Math.floor((diff % 60000) / 1000);
-    document.getElementById("countdown").textContent =
-      "Next refresh in " + m + "m " + String(s).padStart(2,"0") + "s";
-  }, 1000);
+  setTimeout(() => {
+    loadMarket('rtm');
+    loadMarket('hasp');
+    scheduleNext();
+  }, next - now);
 }
 
-refresh();
+// Load both on page open
+loadMarket('rtm');
+loadMarket('hasp');
+scheduleNext();
 </script>
 </body>
 </html>"""
