@@ -23,7 +23,6 @@ from zoneinfo import ZoneInfo
 
 import requests
 from flask import Flask, jsonify
-from flask_cors import CORS
 
 OASIS_URL = "https://oasis.caiso.com/oasisapi/SingleZip"
 NODE      = "ELAP_PACE-APND"
@@ -34,7 +33,11 @@ TZ_PT     = ZoneInfo("America/Los_Angeles")
 TZ_UTC    = ZoneInfo("UTC")
 
 app = Flask(__name__)
-CORS(app)
+
+@app.after_request
+def add_cors(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    return response
 
 
 def fetch_hour(hr: int) -> list:
