@@ -89,7 +89,7 @@ def today():
             print(f"  Hour {hr:02d}: {len(rows)} rows")
         except Exception as e:
             print(f"  Hour {hr:02d}: SKIPPED ({e})")
-        time.sleep(2)
+        time.sleep(10)
 
     return jsonify(all_rows)
 
