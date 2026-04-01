@@ -1,12 +1,16 @@
 """
-CAISO Local API Server
-======================
-Runs a small local web server that fetches CAISO data and serves it
-to the dashboard HTML file.
+CAISO Local API Server (Render-ready)
+==============================================
+Runs a small web server that fetches CAISO data and serves it
+to the dashboard HTML file. Can be deployed to Render.com for free.
 
-Usage:
+Requirements:
+    pip install requests flask
+
+Usage (local):
     python caiso_server.py
-Then open caiso_dashboard.html in your browser.
+Usage (Render):
+    Deploy this file to Render.com as a web service.
 """
 
 import io
@@ -16,9 +20,9 @@ import time
 import zipfile
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import requests
+from flask import Flask, jsonify
 
 OASIS_URL = "https://oasis.caiso.com/oasisapi/SingleZip"
 NODE      = "ELAP_PACE-APND"
@@ -27,7 +31,8 @@ QUERY     = "PRC_INTVL_LMP"
 VERSION   = "1"
 TZ_PT     = ZoneInfo("America/Los_Angeles")
 TZ_UTC    = ZoneInfo("UTC")
-PORT      = 8765
+
+app = Flask(__name__)
 
 
 def fetch_hour(hr: int) -> list:
@@ -74,45 +79,29 @@ def fetch_hour(hr: int) -> list:
     return []
 
 
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass  # suppress default logging
+@app.route("/today")
+def today():
+    current_hr = datetime.now(tz=TZ_PT).hour
+    all_rows   = []
 
-    def do_GET(self):
-        if self.path == "/today":
-            self.handle_today()
-        else:
-            self.send_response(404)
-            self.end_headers()
+    for hr in range(current_hr):
+        try:
+            rows = fetch_hour(hr)
+            all_rows.extend(rows)
+            print(f"  Hour {hr:02d}: {len(rows)} rows")
+        except Exception as e:
+            print(f"  Hour {hr:02d}: SKIPPED ({e})")
+        time.sleep(5)
 
-    def handle_today(self):
-        current_hr = datetime.now(tz=TZ_PT).hour
-        all_rows   = []
-
-        for hr in range(current_hr):
-            try:
-                rows = fetch_hour(hr)
-                all_rows.extend(rows)
-                print(f"  Hour {hr:02d}: {len(rows)} rows")
-            except Exception as e:
-                print(f"  Hour {hr:02d}: SKIPPED ({e})")
-            time.sleep(5)  # pause to avoid rate limiting
-
-        payload = json.dumps(all_rows).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type",  "application/json")
-        self.send_header("Content-Length", len(payload))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(payload)
+    resp = jsonify(all_rows)
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp
 
 
-def main():
-    print(f"CAISO Local Server running at http://localhost:{PORT}")
-    print(f"Open caiso_dashboard.html in your browser.")
-    print(f"Press Ctrl+C to stop.\n")
-    HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+@app.route("/")
+def index():
+    return "CAISO LMP Server is running."
 
 
 if __name__ == "__main__":
-    main()
+    app.run(host="0.0.0.0", port=8765)
