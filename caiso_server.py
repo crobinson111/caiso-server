@@ -19,7 +19,8 @@ from flask import Flask, jsonify
 
 OASIS_URL = "https://oasis.caiso.com/oasisapi/SingleZip"
 NODE      = "ELAP_PACE-APND"
-VERSION   = "1"
+NODE_DAM  = "PNM_4CORNERS345_PACE-APND"
+NODE_DAM  = "PNM_4CORNERS345_PACE-APND"
 TZ_PT     = ZoneInfo("America/Los_Angeles")
 TZ_UTC    = ZoneInfo("UTC")
 
@@ -87,14 +88,14 @@ def fetch_all(market, query):
     return all_rows
 
 
-def parse_csv(raw):
+def parse_csv(raw, node=NODE):
     lines = raw.decode("utf-8").strip().split("\n")
     hdr   = [h.strip().strip('"') for h in lines[0].split(",")]
     rows  = []
     for line in lines[1:]:
         vals = line.split(",")
         obj  = {hdr[i]: vals[i].strip().strip('"') for i in range(len(hdr))}
-        if obj.get("NODE") == NODE and obj.get("LMP_TYPE") == "LMP":
+        if obj.get("NODE") == node and obj.get("LMP_TYPE") == "LMP":
             rows.append(obj)
     return rows
 
@@ -115,19 +116,20 @@ def tomorrow_dam():
     today_pt  = now_pt.replace(hour=0, minute=0, second=0, microsecond=0)
     end_pt    = today_pt + timedelta(days=1)
 
-    # DAM uses PT offset directly, not UTC
     pt_offset = "-0700" if now_pt.dst() else "-0800"
 
     params = {
         "queryname":     "PRC_LMP",
         "market_run_id": "DAM",
         "grp_type":      "ALL_APNODES",
-        "node":          NODE,
+        "node":          NODE_DAM,
         "startdatetime": today_pt.strftime("%Y%m%dT%H:%M") + pt_offset,
         "enddatetime":   end_pt.strftime("%Y%m%dT%H:%M") + pt_offset,
         "version":       VERSION,
         "resultformat":  "6",
     }
+
+    print(f"  [DAM] URL: {OASIS_URL}?{'&'.join(f'{k}={v}' for k,v in params.items())}")
 
     try:
         resp = requests.get(OASIS_URL, params=params, timeout=60)
@@ -139,9 +141,11 @@ def tomorrow_dam():
                 if raw.strip().startswith(b"<"):
                     text = raw.decode("utf-8", errors="replace")
                     err  = re.search(r"<m:ERR_DESC>(.*?)</m:ERR_DESC>", text)
-                    raise ValueError(err.group(1) if err else "CAISO XML error")
-                return jsonify(parse_csv(raw))
+                    print(f"  [DAM] Error: {err.group(1) if err else text[:200]}")
+                    return jsonify([])
+                return jsonify(parse_csv(raw, NODE_DAM))
     except Exception as e:
+        print(f"  [DAM] Exception: {e}")
         return jsonify([])
 
 
