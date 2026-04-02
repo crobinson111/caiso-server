@@ -314,16 +314,20 @@ async function loadMarket(market) {
 function scheduleNext() {
   const now  = nowPT();
   const next = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours()+1, 0, 0);
-  setTimeout(() => {
-    loadMarket('rtm');
-    loadMarket('hasp');
+  setTimeout(async () => {
+    await loadMarket('rtm');
+    await loadMarket('hasp');
     scheduleNext();
   }, next - now);
 }
 
-// Load both on page open
-loadMarket('rtm');
-loadMarket('hasp');
+// Load RTM first, then HASP after RTM finishes
+async function loadAll() {
+  await loadMarket('rtm');
+  await loadMarket('hasp');
+}
+
+loadAll();
 scheduleNext();
 </script>
 </body>
