@@ -113,16 +113,18 @@ def today_hasp():
 def tomorrow_dam():
     now_pt    = datetime.now(tz=TZ_PT)
     today_pt  = now_pt.replace(hour=0, minute=0, second=0, microsecond=0)
-    start_utc = today_pt.astimezone(TZ_UTC)
-    end_utc   = (today_pt + timedelta(days=1)).astimezone(TZ_UTC)
+    end_pt    = today_pt + timedelta(days=1)
+
+    # DAM uses PT offset directly, not UTC
+    pt_offset = "-0700" if now_pt.dst() else "-0800"
 
     params = {
         "queryname":     "PRC_LMP",
         "market_run_id": "DAM",
         "grp_type":      "ALL_APNODES",
         "node":          NODE,
-        "startdatetime": start_utc.strftime("%Y%m%dT%H:%M-0000"),
-        "enddatetime":   end_utc.strftime("%Y%m%dT%H:%M-0000"),
+        "startdatetime": today_pt.strftime("%Y%m%dT%H:%M") + pt_offset,
+        "enddatetime":   end_pt.strftime("%Y%m%dT%H:%M") + pt_offset,
         "version":       VERSION,
         "resultformat":  "6",
     }
@@ -384,7 +386,7 @@ async function loadDAM() {
 
   if (!allRows.length) {
     document.getElementById("dam-table").innerHTML =
-      '<div class="status">No DAM data available yet for tomorrow.<br>DAM prices are typically published after 1 PM PT.</div>';
+      '<div class="status">No DAM data available for today.<br>This is unexpected — try hitting Refresh.</div>';
     document.getElementById("damRefreshed").textContent = "No data yet — check back after 1 PM PT";
     return;
   }
