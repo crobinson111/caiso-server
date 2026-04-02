@@ -96,7 +96,7 @@ def today_rtm():
 
 @app.route("/today/hasp")
 def today_hasp():
-    return jsonify(fetch_all("HASP", "PRC_INTVL_LMP"))
+    return jsonify(fetch_all("HASP", "PRC_HASP_LMP"))
 
 
 @app.route("/")
