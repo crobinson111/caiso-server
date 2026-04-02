@@ -1,7 +1,7 @@
 """
-CAISO LMP Server + Dashboard (RTM + HASP)
-==========================================
-Serves both RTM 5-min and HASP 15-min dashboards on one page.
+CAISO LMP Server + Dashboard (RTM + HASP + DAM)
+=================================================
+Serves RTM 5-min, HASP 15-min, and DAM hourly dashboards on one page.
 Deploy to Render.com.
 
 Requirements: requests, flask, gunicorn
@@ -31,9 +31,9 @@ def add_cors(response):
     return response
 
 
-def fetch_hour(hr: int, market: str, query: str) -> list:
-    now_pt    = datetime.now(tz=TZ_PT)
-    today_pt  = now_pt.replace(hour=0, minute=0, second=0, microsecond=0)
+def fetch_hour(hr, market, query):
+    now_pt   = datetime.now(tz=TZ_PT)
+    today_pt = now_pt.replace(hour=0, minute=0, second=0, microsecond=0)
     start_pt  = today_pt + timedelta(hours=hr)
     end_pt    = start_pt + timedelta(hours=1)
     start_utc = start_pt.astimezone(TZ_UTC)
@@ -61,7 +61,6 @@ def fetch_hour(hr: int, market: str, query: str) -> list:
                 text = raw.decode("utf-8", errors="replace")
                 err  = re.search(r"<m:ERR_DESC>(.*?)</m:ERR_DESC>", text)
                 raise ValueError(err.group(1) if err else "CAISO XML error")
-
             lines = raw.decode("utf-8").strip().split("\n")
             hdr   = [h.strip().strip('"') for h in lines[0].split(",")]
             rows  = []
@@ -71,11 +70,10 @@ def fetch_hour(hr: int, market: str, query: str) -> list:
                 if obj.get("NODE") == NODE and obj.get("LMP_TYPE") == "LMP":
                     rows.append(obj)
             return rows
-
     return []
 
 
-def fetch_all(market: str, query: str) -> list:
+def fetch_all(market, query):
     current_hr = datetime.now(tz=TZ_PT).hour
     all_rows   = []
     for hr in range(current_hr):
@@ -89,6 +87,18 @@ def fetch_all(market: str, query: str) -> list:
     return all_rows
 
 
+def parse_csv(raw):
+    lines = raw.decode("utf-8").strip().split("\n")
+    hdr   = [h.strip().strip('"') for h in lines[0].split(",")]
+    rows  = []
+    for line in lines[1:]:
+        vals = line.split(",")
+        obj  = {hdr[i]: vals[i].strip().strip('"') for i in range(len(hdr))}
+        if obj.get("NODE") == NODE and obj.get("LMP_TYPE") == "LMP":
+            rows.append(obj)
+    return rows
+
+
 @app.route("/today/rtm")
 def today_rtm():
     return jsonify(fetch_all("RTM", "PRC_INTVL_LMP"))
@@ -97,6 +107,40 @@ def today_rtm():
 @app.route("/today/hasp")
 def today_hasp():
     return jsonify(fetch_all("HASP", "PRC_HASP_LMP"))
+
+
+@app.route("/tomorrow/dam")
+def tomorrow_dam():
+    now_pt    = datetime.now(tz=TZ_PT)
+    today_pt  = now_pt.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_utc = today_pt.astimezone(TZ_UTC)
+    end_utc   = (today_pt + timedelta(days=1)).astimezone(TZ_UTC)
+
+    params = {
+        "queryname":     "PRC_LMP",
+        "market_run_id": "DAM",
+        "grp_type":      "ALL_APNODES",
+        "node":          NODE,
+        "startdatetime": start_utc.strftime("%Y%m%dT%H:%M-0000"),
+        "enddatetime":   end_utc.strftime("%Y%m%dT%H:%M-0000"),
+        "version":       VERSION,
+        "resultformat":  "6",
+    }
+
+    try:
+        resp = requests.get(OASIS_URL, params=params, timeout=60)
+        resp.raise_for_status()
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            for name in zf.namelist():
+                with zf.open(name) as f:
+                    raw = f.read()
+                if raw.strip().startswith(b"<"):
+                    text = raw.decode("utf-8", errors="replace")
+                    err  = re.search(r"<m:ERR_DESC>(.*?)</m:ERR_DESC>", text)
+                    raise ValueError(err.group(1) if err else "CAISO XML error")
+                return jsonify(parse_csv(raw))
+    except Exception as e:
+        return jsonify([])
 
 
 @app.route("/")
@@ -139,7 +183,7 @@ def dashboard():
   .status { text-align: center; padding: 40px; color: #666; font-size: 14px; }
   .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid #ccc; border-top-color: #1F4E79; border-radius: 50%; animation: spin .8s linear infinite; margin-right: 8px; vertical-align: middle; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .divider { height: 4px; background: #1F4E79; opacity: 0.2; }
+  .divider { height: 4px; background: #1F4E79; opacity: 0.2; margin-top: 24px; }
 </style>
 </head>
 <body>
@@ -147,7 +191,7 @@ def dashboard():
 <!-- RTM Section -->
 <div class="section-header">
   <div>
-    <h1>CAISO Real-Time Market (RTM) 5-Min LMP &nbsp;|&nbsp; ELAP_PACE-APND</h1>
+    <h1>Real-Time Market (RTM) 5-Min LMP &nbsp;|&nbsp; ELAP_PACE-APND</h1>
     <div class="meta" id="rtmRefreshed">Loading…</div>
   </div>
   <div style="text-align:right">
@@ -198,6 +242,33 @@ def dashboard():
   <div id="hasp-table"><div class="status"><span class="spinner"></span> Fetching data…</div></div>
 </div>
 
+<div class="divider"></div>
+
+<!-- DAM Section -->
+<div class="section-header">
+  <div>
+    <h1>Day-Ahead Market (DAM) Hourly LMP — Today &nbsp;|&nbsp; ELAP_PACE-APND</h1>
+    <div class="meta" id="damRefreshed">Loading…</div>
+  </div>
+  <div style="text-align:right">
+    <button onclick="loadDAM()" style="background:#fff;color:#1F4E79;border:none;padding:7px 14px;border-radius:6px;cursor:pointer;font-weight:bold;font-size:13px;">⟳ Refresh</button>
+  </div>
+</div>
+<div class="cards">
+  <div class="card"><div class="label">Today's High</div><div class="value pos" id="dam-cHigh">—</div></div>
+  <div class="card"><div class="label">Today's Low</div><div class="value neg" id="dam-cLow">—</div></div>
+  <div class="card"><div class="label">Today's Avg</div><div class="value" id="dam-cAvg">—</div></div>
+  <div class="card"><div class="label">Hours Published</div><div class="value" id="dam-cHours">—</div></div>
+</div>
+<div class="chart-wrap">
+  <h2>Hourly LMP ($/MWh) — Tomorrow</h2>
+  <canvas id="dam-chart" height="220"></canvas>
+</div>
+<div class="table-wrap">
+  <h2>Hourly LMP ($/MWh)</h2>
+  <div id="dam-table"><div class="status"><span class="spinner"></span> Fetching data…</div></div>
+</div>
+
 <script>
 let charts = {};
 
@@ -205,56 +276,7 @@ function nowPT() {
   return new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
 }
 
-async function loadMarket(market) {
-  const prefix = market;
-  document.getElementById(prefix + "-table").innerHTML =
-    '<div class="status"><span class="spinner"></span> Fetching data…</div>';
-  document.getElementById(prefix + "Refreshed").textContent = "Refreshing…";
-
-  let allRows = [];
-  try {
-    const resp = await fetch("/today/" + market);
-    if (!resp.ok) throw new Error("Server error: " + resp.status);
-    allRows = await resp.json();
-  } catch(e) {
-    document.getElementById(prefix + "-table").innerHTML =
-      '<div class="status">⚠️ Could not load data: ' + e.message + '</div>';
-    return;
-  }
-
-  if (!allRows.length) {
-    document.getElementById(prefix + "-table").innerHTML =
-      '<div class="status">No data available yet for today.</div>';
-    return;
-  }
-
-  const rows = allRows.map(r => ({
-    time: r["INTERVALSTARTTIME_GMT"],
-    hr: parseFloat(r["OPR_HR"]),
-    lmp: parseFloat(r["MW"]),
-    timePT: (() => {
-      const d = new Date(r["INTERVALSTARTTIME_GMT"]);
-      return d.toLocaleTimeString("en-US", {hour:"2-digit", minute:"2-digit", timeZone:"America/Los_Angeles", hour12:false});
-    })()
-  })).sort((a,b) => a.time < b.time ? -1 : 1);
-
-  const lmps   = rows.map(r => r.lmp);
-  const latest = lmps[lmps.length - 1];
-  const high   = Math.max(...lmps);
-  const low    = Math.min(...lmps);
-  const avg    = lmps.reduce((a,b) => a+b, 0) / lmps.length;
-
-  const colorVal = (id, v) => {
-    const el = document.getElementById(id);
-    el.textContent = "$" + v.toFixed(2);
-    el.className = "value " + (v >= 0 ? "pos" : "neg");
-  };
-  colorVal(prefix + "-cLatest", latest);
-  colorVal(prefix + "-cHigh",   high);
-  colorVal(prefix + "-cLow",    low);
-  document.getElementById(prefix + "-cAvg").textContent   = "$" + avg.toFixed(2);
-  document.getElementById(prefix + "-cHours").textContent = new Set(rows.map(r => r.hr)).size;
-
+async function ensureChart() {
   if (!window.Chart) {
     await new Promise((res, rej) => {
       const s = document.createElement("script");
@@ -263,68 +285,154 @@ async function loadMarket(market) {
       document.head.appendChild(s);
     });
   }
+}
 
-  if (charts[prefix]) charts[prefix].destroy();
-  const ctx    = document.getElementById(prefix + "-chart").getContext("2d");
-  const colors = lmps.map(v => v >= 0 ? "rgba(26,107,47,0.8)" : "rgba(185,28,28,0.8)");
-  charts[prefix] = new Chart(ctx, {
+function renderChart(id, labels, data) {
+  if (charts[id]) charts[id].destroy();
+  const colors = data.map(v => v >= 0 ? "rgba(26,107,47,0.8)" : "rgba(185,28,28,0.8)");
+  charts[id] = new Chart(document.getElementById(id + "-chart").getContext("2d"), {
     type: "bar",
-    data: {
-      labels: rows.map(r => r.timePT),
-      datasets: [{ label: "LMP ($/MWh)", data: lmps, backgroundColor: colors, borderWidth: 0 }]
-    },
+    data: { labels, datasets: [{ label: "LMP ($/MWh)", data, backgroundColor: colors, borderWidth: 0 }] },
     options: {
       responsive: true,
       plugins: { legend: { display: false },
         tooltip: { callbacks: { label: c => " $" + c.parsed.y.toFixed(4) + "/MWh" } } },
       scales: {
-        x: { ticks: { maxTicksLimit: 12, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 24, font: { size: 10 } } },
         y: { ticks: { callback: v => "$" + v }, grid: { color: "#e5e7eb" } }
       }
     }
   });
-
-  const byHr = {};
-  rows.forEach(r => {
-    if (!byHr[r.hr]) byHr[r.hr] = [];
-    byHr[r.hr].push(r.lmp);
-  });
-  const hrAvgs = Object.keys(byHr).sort((a,b) => +a - +b).map(h => ({
-    hr: +h,
-    avg: byHr[h].reduce((a,b) => a+b, 0) / byHr[h].length,
-    min: Math.min(...byHr[h]),
-    max: Math.max(...byHr[h]),
-  }));
-
-  let tbl = '<table><thead><tr><th>Oper Hour</th><th>Avg LMP ($/MWh)</th><th>Min</th><th>Max</th></tr></thead><tbody>';
-  hrAvgs.forEach(r => {
-    tbl += '<tr><td>' + r.hr + '</td><td class="' + (r.avg < 0 ? "neg" : "pos") + '">' + r.avg.toFixed(4) +
-           '</td><td class="' + (r.min < 0 ? "neg" : "") + '">' + r.min.toFixed(4) +
-           '</td><td class="' + (r.max < 0 ? "neg" : "pos") + '">' + r.max.toFixed(4) + '</td></tr>';
-  });
-  tbl += '</tbody></table>';
-  document.getElementById(prefix + "-table").innerHTML = tbl;
-
-  const now = nowPT();
-  document.getElementById(prefix + "Refreshed").textContent =
-    "Last refreshed: " + now.toLocaleTimeString("en-US", {timeZone:"America/Los_Angeles"}) + " PT";
 }
 
-// Schedule auto-refresh at top of next hour
+async function loadMarket(market) {
+  const url = "/today/" + market;
+  document.getElementById(market + "-table").innerHTML =
+    '<div class="status"><span class="spinner"></span> Fetching data…</div>';
+  document.getElementById(market + "Refreshed").textContent = "Refreshing…";
+
+  let allRows = [];
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error("Server error: " + resp.status);
+    allRows = await resp.json();
+  } catch(e) {
+    document.getElementById(market + "-table").innerHTML =
+      '<div class="status">⚠️ Could not load data: ' + e.message + '</div>';
+    return;
+  }
+
+  if (!allRows.length) {
+    document.getElementById(market + "-table").innerHTML =
+      '<div class="status">No data available yet for today.</div>';
+    return;
+  }
+
+  const rows = allRows.map(r => ({
+    time: r["INTERVALSTARTTIME_GMT"], hr: parseFloat(r["OPR_HR"]), lmp: parseFloat(r["MW"]),
+    timePT: new Date(r["INTERVALSTARTTIME_GMT"]).toLocaleTimeString("en-US",
+      {hour:"2-digit", minute:"2-digit", timeZone:"America/Los_Angeles", hour12:false})
+  })).sort((a,b) => a.time < b.time ? -1 : 1);
+
+  const lmps = rows.map(r => r.lmp);
+  const colorVal = (id, v) => {
+    const el = document.getElementById(id);
+    el.textContent = "$" + v.toFixed(2);
+    el.className = "value " + (v >= 0 ? "pos" : "neg");
+  };
+  colorVal(market + "-cLatest", lmps[lmps.length-1]);
+  colorVal(market + "-cHigh",   Math.max(...lmps));
+  colorVal(market + "-cLow",    Math.min(...lmps));
+  document.getElementById(market + "-cAvg").textContent = "$" + (lmps.reduce((a,b)=>a+b,0)/lmps.length).toFixed(2);
+  document.getElementById(market + "-cHours").textContent = new Set(rows.map(r=>r.hr)).size;
+
+  await ensureChart();
+  renderChart(market, rows.map(r=>r.timePT), lmps);
+
+  const byHr = {};
+  rows.forEach(r => { if (!byHr[r.hr]) byHr[r.hr]=[]; byHr[r.hr].push(r.lmp); });
+  let tbl = '<table><thead><tr><th>Oper Hour</th><th>Avg LMP ($/MWh)</th><th>Min</th><th>Max</th></tr></thead><tbody>';
+  Object.keys(byHr).sort((a,b)=>+a-+b).forEach(h => {
+    const vals = byHr[h];
+    const avg  = vals.reduce((a,b)=>a+b,0)/vals.length;
+    const min  = Math.min(...vals), max = Math.max(...vals);
+    tbl += '<tr><td>'+h+'</td><td class="'+(avg<0?"neg":"pos")+'">'+avg.toFixed(4)+
+           '</td><td class="'+(min<0?"neg":"")+'">'+min.toFixed(4)+
+           '</td><td class="'+(max<0?"neg":"pos")+'">'+max.toFixed(4)+'</td></tr>';
+  });
+  tbl += '</tbody></table>';
+  document.getElementById(market + "-table").innerHTML = tbl;
+  document.getElementById(market + "Refreshed").textContent =
+    "Last refreshed: " + nowPT().toLocaleTimeString("en-US",{timeZone:"America/Los_Angeles"}) + " PT";
+}
+
+async function loadDAM() {
+  document.getElementById("dam-table").innerHTML =
+    '<div class="status"><span class="spinner"></span> Fetching data…</div>';
+  document.getElementById("damRefreshed").textContent = "Refreshing…";
+
+  let allRows = [];
+  try {
+    const resp = await fetch("/tomorrow/dam");
+    if (!resp.ok) throw new Error("Server error: " + resp.status);
+    allRows = await resp.json();
+  } catch(e) {
+    document.getElementById("dam-table").innerHTML =
+      '<div class="status">⚠️ Could not load DAM data: ' + e.message + '</div>';
+    return;
+  }
+
+  if (!allRows.length) {
+    document.getElementById("dam-table").innerHTML =
+      '<div class="status">No DAM data available yet for tomorrow.<br>DAM prices are typically published after 1 PM PT.</div>';
+    document.getElementById("damRefreshed").textContent = "No data yet — check back after 1 PM PT";
+    return;
+  }
+
+  const rows = allRows.map(r => ({
+    time: r["INTERVALSTARTTIME_GMT"], hr: parseFloat(r["OPR_HR"]), lmp: parseFloat(r["MW"]),
+    timePT: new Date(r["INTERVALSTARTTIME_GMT"]).toLocaleTimeString("en-US",
+      {hour:"2-digit", minute:"2-digit", timeZone:"America/Los_Angeles", hour12:false})
+  })).sort((a,b) => a.time < b.time ? -1 : 1);
+
+  const lmps = rows.map(r => r.lmp);
+  const colorVal = (id, v) => {
+    const el = document.getElementById(id);
+    el.textContent = "$" + v.toFixed(2);
+    el.className = "value " + (v >= 0 ? "pos" : "neg");
+  };
+  colorVal("dam-cHigh", Math.max(...lmps));
+  colorVal("dam-cLow",  Math.min(...lmps));
+  document.getElementById("dam-cAvg").textContent   = "$" + (lmps.reduce((a,b)=>a+b,0)/lmps.length).toFixed(2);
+  document.getElementById("dam-cHours").textContent = rows.length;
+
+  await ensureChart();
+  renderChart("dam", rows.map(r=>r.timePT), lmps);
+
+  let tbl = '<table><thead><tr><th>Oper Hour</th><th>LMP ($/MWh)</th></tr></thead><tbody>';
+  rows.forEach(r => {
+    tbl += '<tr><td>'+r.hr+'</td><td class="'+(r.lmp<0?"neg":"pos")+'">'+r.lmp.toFixed(4)+'</td></tr>';
+  });
+  tbl += '</tbody></table>';
+  document.getElementById("dam-table").innerHTML = tbl;
+
+  const now = nowPT();
+  const tom = new Date(now.getFullYear(), now.getMonth(), now.getDate()+1);
+  document.getElementById("damRefreshed").textContent =
+    "Tomorrow: " + tom.toLocaleDateString("en-US",{timeZone:"America/Los_Angeles"}) +
+    " | Refreshed: " + now.toLocaleTimeString("en-US",{timeZone:"America/Los_Angeles"}) + " PT";
+}
+
 function scheduleNext() {
   const now  = nowPT();
   const next = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours()+1, 0, 0);
-  setTimeout(async () => {
-    await loadMarket('rtm');
-    await loadMarket('hasp');
-    scheduleNext();
-  }, next - now);
+  setTimeout(async () => { await loadAll(); scheduleNext(); }, next - now);
 }
 
-// Load RTM first, then HASP after RTM finishes
 async function loadAll() {
   await loadMarket('rtm');
   await loadMarket('hasp');
+  await loadDAM();
 }
 
 loadAll();
