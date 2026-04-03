@@ -1,7 +1,7 @@
 """
-CAISO LMP Server + Dashboard (RTM + HASP + DAM)
-=================================================
-Serves RTM 5-min, HASP 15-min, and DAM hourly dashboards on one page.
+CAISO LMP Server + Dashboard (RTM + HASP)
+==========================================
+Serves RTM 5-min and HASP 15-min dashboards on one page.
 Deploy to Render.com.
 
 Requirements: requests, flask, gunicorn
@@ -19,8 +19,7 @@ from flask import Flask, jsonify
 
 OASIS_URL = "https://oasis.caiso.com/oasisapi/SingleZip"
 NODE      = "ELAP_PACE-APND"
-NODE_DAM  = "PNM_4CORNERS345_PACE-APND"
-NODE_DAM  = "PNM_4CORNERS345_PACE-APND"
+VERSION   = "1"
 TZ_PT     = ZoneInfo("America/Los_Angeles")
 TZ_UTC    = ZoneInfo("UTC")
 
@@ -88,18 +87,6 @@ def fetch_all(market, query):
     return all_rows
 
 
-def parse_csv(raw, node=NODE):
-    lines = raw.decode("utf-8").strip().split("\n")
-    hdr   = [h.strip().strip('"') for h in lines[0].split(",")]
-    rows  = []
-    for line in lines[1:]:
-        vals = line.split(",")
-        obj  = {hdr[i]: vals[i].strip().strip('"') for i in range(len(hdr))}
-        if obj.get("NODE") == node and obj.get("LMP_TYPE") == "LMP":
-            rows.append(obj)
-    return rows
-
-
 @app.route("/today/rtm")
 def today_rtm():
     return jsonify(fetch_all("RTM", "PRC_INTVL_LMP"))
@@ -108,45 +95,6 @@ def today_rtm():
 @app.route("/today/hasp")
 def today_hasp():
     return jsonify(fetch_all("HASP", "PRC_HASP_LMP"))
-
-
-@app.route("/tomorrow/dam")
-def tomorrow_dam():
-    now_pt    = datetime.now(tz=TZ_PT)
-    today_pt  = now_pt.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_pt    = today_pt + timedelta(days=1)
-
-    pt_offset = "-0700" if now_pt.dst() else "-0800"
-
-    params = {
-        "queryname":     "PRC_LMP",
-        "market_run_id": "DAM",
-        "grp_type":      "ALL_APNODES",
-        "node":          NODE_DAM,
-        "startdatetime": today_pt.strftime("%Y%m%dT%H:%M") + pt_offset,
-        "enddatetime":   end_pt.strftime("%Y%m%dT%H:%M") + pt_offset,
-        "version":       VERSION,
-        "resultformat":  "6",
-    }
-
-    print(f"  [DAM] URL: {OASIS_URL}?{'&'.join(f'{k}={v}' for k,v in params.items())}")
-
-    try:
-        resp = requests.get(OASIS_URL, params=params, timeout=60)
-        resp.raise_for_status()
-        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-            for name in zf.namelist():
-                with zf.open(name) as f:
-                    raw = f.read()
-                if raw.strip().startswith(b"<"):
-                    text = raw.decode("utf-8", errors="replace")
-                    err  = re.search(r"<m:ERR_DESC>(.*?)</m:ERR_DESC>", text)
-                    print(f"  [DAM] Error: {err.group(1) if err else text[:200]}")
-                    return jsonify([])
-                return jsonify(parse_csv(raw, NODE_DAM))
-    except Exception as e:
-        print(f"  [DAM] Exception: {e}")
-        return jsonify([])
 
 
 @app.route("/")
@@ -248,33 +196,6 @@ def dashboard():
   <div id="hasp-table"><div class="status"><span class="spinner"></span> Fetching data…</div></div>
 </div>
 
-<div class="divider"></div>
-
-<!-- DAM Section -->
-<div class="section-header">
-  <div>
-    <h1>Day-Ahead Market (DAM) Hourly LMP — Today &nbsp;|&nbsp; ELAP_PACE-APND</h1>
-    <div class="meta" id="damRefreshed">Loading…</div>
-  </div>
-  <div style="text-align:right">
-    <button onclick="loadDAM()" style="background:#fff;color:#1F4E79;border:none;padding:7px 14px;border-radius:6px;cursor:pointer;font-weight:bold;font-size:13px;">⟳ Refresh</button>
-  </div>
-</div>
-<div class="cards">
-  <div class="card"><div class="label">Today's High</div><div class="value pos" id="dam-cHigh">—</div></div>
-  <div class="card"><div class="label">Today's Low</div><div class="value neg" id="dam-cLow">—</div></div>
-  <div class="card"><div class="label">Today's Avg</div><div class="value" id="dam-cAvg">—</div></div>
-  <div class="card"><div class="label">Hours Published</div><div class="value" id="dam-cHours">—</div></div>
-</div>
-<div class="chart-wrap">
-  <h2>Hourly LMP ($/MWh) — Tomorrow</h2>
-  <canvas id="dam-chart" height="220"></canvas>
-</div>
-<div class="table-wrap">
-  <h2>Hourly LMP ($/MWh)</h2>
-  <div id="dam-table"><div class="status"><span class="spinner"></span> Fetching data…</div></div>
-</div>
-
 <script>
 let charts = {};
 
@@ -293,33 +214,14 @@ async function ensureChart() {
   }
 }
 
-function renderChart(id, labels, data) {
-  if (charts[id]) charts[id].destroy();
-  const colors = data.map(v => v >= 0 ? "rgba(26,107,47,0.8)" : "rgba(185,28,28,0.8)");
-  charts[id] = new Chart(document.getElementById(id + "-chart").getContext("2d"), {
-    type: "bar",
-    data: { labels, datasets: [{ label: "LMP ($/MWh)", data, backgroundColor: colors, borderWidth: 0 }] },
-    options: {
-      responsive: true,
-      plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: c => " $" + c.parsed.y.toFixed(4) + "/MWh" } } },
-      scales: {
-        x: { ticks: { maxTicksLimit: 24, font: { size: 10 } } },
-        y: { ticks: { callback: v => "$" + v }, grid: { color: "#e5e7eb" } }
-      }
-    }
-  });
-}
-
 async function loadMarket(market) {
-  const url = "/today/" + market;
   document.getElementById(market + "-table").innerHTML =
     '<div class="status"><span class="spinner"></span> Fetching data…</div>';
   document.getElementById(market + "Refreshed").textContent = "Refreshing…";
 
   let allRows = [];
   try {
-    const resp = await fetch(url);
+    const resp = await fetch("/today/" + market);
     if (!resp.ok) throw new Error("Server error: " + resp.status);
     allRows = await resp.json();
   } catch(e) {
@@ -353,7 +255,21 @@ async function loadMarket(market) {
   document.getElementById(market + "-cHours").textContent = new Set(rows.map(r=>r.hr)).size;
 
   await ensureChart();
-  renderChart(market, rows.map(r=>r.timePT), lmps);
+  if (charts[market]) charts[market].destroy();
+  const colors = lmps.map(v => v >= 0 ? "rgba(26,107,47,0.8)" : "rgba(185,28,28,0.8)");
+  charts[market] = new Chart(document.getElementById(market + "-chart").getContext("2d"), {
+    type: "bar",
+    data: { labels: rows.map(r=>r.timePT), datasets: [{ label: "LMP ($/MWh)", data: lmps, backgroundColor: colors, borderWidth: 0 }] },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: c => " $" + c.parsed.y.toFixed(4) + "/MWh" } } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 12, font: { size: 10 } } },
+        y: { ticks: { callback: v => "$" + v }, grid: { color: "#e5e7eb" } }
+      }
+    }
+  });
 
   const byHr = {};
   rows.forEach(r => { if (!byHr[r.hr]) byHr[r.hr]=[]; byHr[r.hr].push(r.lmp); });
@@ -372,63 +288,6 @@ async function loadMarket(market) {
     "Last refreshed: " + nowPT().toLocaleTimeString("en-US",{timeZone:"America/Los_Angeles"}) + " PT";
 }
 
-async function loadDAM() {
-  document.getElementById("dam-table").innerHTML =
-    '<div class="status"><span class="spinner"></span> Fetching data…</div>';
-  document.getElementById("damRefreshed").textContent = "Refreshing…";
-
-  let allRows = [];
-  try {
-    const resp = await fetch("/tomorrow/dam");
-    if (!resp.ok) throw new Error("Server error: " + resp.status);
-    allRows = await resp.json();
-  } catch(e) {
-    document.getElementById("dam-table").innerHTML =
-      '<div class="status">⚠️ Could not load DAM data: ' + e.message + '</div>';
-    return;
-  }
-
-  if (!allRows.length) {
-    document.getElementById("dam-table").innerHTML =
-      '<div class="status">No DAM data available for today.<br>This is unexpected — try hitting Refresh.</div>';
-    document.getElementById("damRefreshed").textContent = "No data yet — check back after 1 PM PT";
-    return;
-  }
-
-  const rows = allRows.map(r => ({
-    time: r["INTERVALSTARTTIME_GMT"], hr: parseFloat(r["OPR_HR"]), lmp: parseFloat(r["MW"]),
-    timePT: new Date(r["INTERVALSTARTTIME_GMT"]).toLocaleTimeString("en-US",
-      {hour:"2-digit", minute:"2-digit", timeZone:"America/Los_Angeles", hour12:false})
-  })).sort((a,b) => a.time < b.time ? -1 : 1);
-
-  const lmps = rows.map(r => r.lmp);
-  const colorVal = (id, v) => {
-    const el = document.getElementById(id);
-    el.textContent = "$" + v.toFixed(2);
-    el.className = "value " + (v >= 0 ? "pos" : "neg");
-  };
-  colorVal("dam-cHigh", Math.max(...lmps));
-  colorVal("dam-cLow",  Math.min(...lmps));
-  document.getElementById("dam-cAvg").textContent   = "$" + (lmps.reduce((a,b)=>a+b,0)/lmps.length).toFixed(2);
-  document.getElementById("dam-cHours").textContent = rows.length;
-
-  await ensureChart();
-  renderChart("dam", rows.map(r=>r.timePT), lmps);
-
-  let tbl = '<table><thead><tr><th>Oper Hour</th><th>LMP ($/MWh)</th></tr></thead><tbody>';
-  rows.forEach(r => {
-    tbl += '<tr><td>'+r.hr+'</td><td class="'+(r.lmp<0?"neg":"pos")+'">'+r.lmp.toFixed(4)+'</td></tr>';
-  });
-  tbl += '</tbody></table>';
-  document.getElementById("dam-table").innerHTML = tbl;
-
-  const now = nowPT();
-  const tom = new Date(now.getFullYear(), now.getMonth(), now.getDate()+1);
-  document.getElementById("damRefreshed").textContent =
-    "Tomorrow: " + tom.toLocaleDateString("en-US",{timeZone:"America/Los_Angeles"}) +
-    " | Refreshed: " + now.toLocaleTimeString("en-US",{timeZone:"America/Los_Angeles"}) + " PT";
-}
-
 function scheduleNext() {
   const now  = nowPT();
   const next = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours()+1, 0, 0);
@@ -438,7 +297,6 @@ function scheduleNext() {
 async function loadAll() {
   await loadMarket('rtm');
   await loadMarket('hasp');
-  await loadDAM();
 }
 
 loadAll();
